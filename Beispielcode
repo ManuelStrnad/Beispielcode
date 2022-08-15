@@ -1,0 +1,187 @@
+#include <stdint.h>
+#include <stdbool.h>
+#include <math.h>
+#include <stdio.h>
+#include "inc/hw_memmap.h"
+#include "inc/hw_types.h"
+#include "driverlib/sysctl.h"
+#include "driverlib/adc.h"
+#include "driverlib/gpio.h"
+#include "driverlib/timer.h"
+#include "driverlib/fpu.h"
+#include <iostream>
+
+// Praepozessor-Makros
+#define SAMPLERATE 44000
+
+//Funktionen-Deklarationen
+void adcIntHandler(void);
+void setup(void);
+// hier nach Bedarf noch weitere Funktionsdeklarationen einfuegen
+
+// globale Variablen
+const float DoublePi = 6.283185308;
+const uint16_t abtastwerte = 440 ;
+int32_t bufferSample[abtastwerte];    //Speichert Abtastwerte
+uint16_t zaehlvariable = 0;   //Liesst Werte in bufferSample ein
+uint32_t k=2;   //k-Wert der DFT
+uint32_t n =0;   //Switched durch die if-Cases fuer entsprecheneden Schritt
+float real;      //Realteil DFT
+float imag;      //Imaginaerteil DFT
+uint32_t amplitude;     //Berechnet Amplitude bei entsprechender Frequenz k
+uint32_t kwert=0;       //Speichert die bis dato groesste Amplitude ab
+uint32_t kstelle=1;     //Gibt den k Wert der groessten Amplitude
+
+
+
+ void main(void){ // nicht veraendern!! Bitte Code in adcIntHandler einfuegen
+    setup();
+    while(1){}
+}
+
+void setup(void){//konfiguriert den Mikrocontroller
+
+    // konfiguriere SystemClock
+    SysCtlClockSet(SYSCTL_SYSDIV_5|SYSCTL_USE_PLL|SYSCTL_OSC_MAIN|SYSCTL_XTAL_16MHZ);
+    uint32_t period = SysCtlClockGet()/SAMPLERATE;
+
+    // aktiviere Peripherie
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_ADC0);
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOE);
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOB);
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER0);
+
+    // aktiviere Gleitkommazahlen-Modul
+    FPUEnable();
+    FPUStackingEnable();
+    FPULazyStackingEnable();
+    FPUFlushToZeroModeSet(FPU_FLUSH_TO_ZERO_EN);
+
+    // konfiguriere GPIO
+    GPIOPinTypeADC(GPIO_PORTE_BASE,GPIO_PIN_2);
+    GPIOPinTypeGPIOOutput(GPIO_PORTB_BASE,GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7);
+
+    // konfiguriere Timer
+    TimerConfigure(TIMER0_BASE,TIMER_CFG_PERIODIC);
+    TimerLoadSet(TIMER0_BASE, TIMER_A, period - 1);
+    TimerControlTrigger(TIMER0_BASE,TIMER_A,true);
+    TimerEnable(TIMER0_BASE,TIMER_A);
+
+    // konfiguriere ADC
+    ADCClockConfigSet(ADC0_BASE,ADC_CLOCK_RATE_FULL,1);
+    ADCSequenceConfigure(ADC0_BASE, 3, ADC_TRIGGER_TIMER, 0);
+    ADCSequenceStepConfigure(ADC0_BASE, 3, 0, ADC_CTL_CH1|ADC_CTL_IE|ADC_CTL_END);
+    ADCSequenceEnable(ADC0_BASE, 3);
+    ADCIntClear(ADC0_BASE,3);
+    ADCIntRegister(ADC0_BASE,3,adcIntHandler);
+    ADCIntEnable(ADC0_BASE,3);
+
+}
+
+void adcIntHandler(void){
+
+
+//440 ADC Werte werden eingelesen und im Buffer gespeichert
+//Zaehlvariable zaehlt hierbei hoch 
+    if (zaehlvariable < abtastwerte){
+        uint32_t adcInputValue;
+        ADCSequenceDataGet(ADC0_BASE,3,&adcInputValue);
+        bufferSample[zaehlvariable]=adcInputValue;
+        zaehlvariable++;
+    }
+    
+//Wenn alle Werte eingelesen sind, also Zaehlvariable=440, wird
+//Der Real- und Imaginaerteil aller Werte fuer ein k berechnet
+    else if (zaehlvariable == abtastwerte && n< 1){
+
+        for (int i= 0; i < 440; i++ ){
+            float winkelExponent = (-1) * DoublePi * i * k /440;
+            real = real + bufferSample[i] *cosf(winkelExponent);
+            imag = imag - bufferSample[i] *sinf(winkelExponent);
+        }
+
+
+        n=1;
+
+    }
+
+//Aus Real und Imaginaer wird nun die Amplitude des k-Wertes berechnet
+//Diese wird mit der bis dato groessten Amplitude verglichen und falls groesser //ueberschreibt sie diese, der entsprechende k-Wert wird dann gespeichert 
+    else if (zaehlvariable == abtastwerte && n == 1 && k<= 40){
+
+
+
+        amplitude  = sqrt ( pow(real,2.0) + pow(imag,2.0 ));
+
+
+
+        if (amplitude >= kwert ){
+
+            kwert = amplitude;
+            kstelle = k;
+
+        }
+
+//Zuruecksetzten der Variablen zur Berechnung eines weiteren k-Werts
+       k++;
+       n=0;
+       real=0;
+       imag = 0;
+
+    }
+    
+//Wenn nach allen k-Werten die groesste Amplitude ermittelt wurde, wird diese //ueber die LED ausgegeben
+    else if (k > 40){
+
+//Zuruecksetzen aller LEDs
+        GPIOPinWrite(GPIO_PORTB_BASE, GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7, 0x00);
+
+//Auswahl der richtigen anzusteuernden LED
+        if(kstelle <= 5){
+                   //1. LED einschalten
+                   GPIOPinWrite(GPIO_PORTB_BASE, GPIO_PIN_0, 0xFF);
+               }
+               if(kstelle > 5 && kstelle <= 10){
+                       //2. LED einschalten
+                       GPIOPinWrite(GPIO_PORTB_BASE, GPIO_PIN_1, 0xFF);
+                   }
+               if(kstelle > 10 && kstelle <= 15){
+                       //3. LED einschalten
+                       GPIOPinWrite(GPIO_PORTB_BASE, GPIO_PIN_2, 0xFF);
+                   }
+               if(kstelle > 15 && kstelle <= 20){
+                       //4. LED einschalten
+                       GPIOPinWrite(GPIO_PORTB_BASE, GPIO_PIN_3, 0xFF);
+                   }
+               if(kstelle > 20 && kstelle <= 25){
+                       //5.LED einschalten
+                       GPIOPinWrite(GPIO_PORTB_BASE, GPIO_PIN_4, 0xFF);
+                   }
+               if(kstelle > 25 && kstelle <= 30){
+                       //6. LED einschalten
+                       GPIOPinWrite(GPIO_PORTB_BASE, GPIO_PIN_5, 0xFF);
+                   }
+               if(kstelle > 30 && kstelle <= 35){
+                       //7. LED einschalten
+                       GPIOPinWrite(GPIO_PORTB_BASE, GPIO_PIN_6, 0xFF);
+                  }
+               if(kstelle > 35 && kstelle <= 40){
+                       //8. LED einschalten
+                       GPIOPinWrite(GPIO_PORTB_BASE, GPIO_PIN_7, 0xFF);
+                  }
+
+//Ruecksetzung aller Variablen fuer neuen Programmdurchlauf
+               zaehlvariable = 0;
+               k = 2 ;
+               n = 0 ;
+
+               kstelle = 1;
+               kwert= 0;
+    }
+
+
+
+
+   // am Ende von adcIntHandler, Interrupt-Flag loeschen
+   ADCIntClear(ADC0_BASE,3);
+}
